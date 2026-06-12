@@ -1,0 +1,15 @@
+{
+  "name": "LIFT LOG",
+  "short_name": "LIFT LOG",
+  "description": "種目別最高RMトラッカー",
+  "theme_color": "#e8363d",
+  "background_color": "#0d0d10",
+  "display": "standalone",
+  "orientation": "portrait",
+  "start_url": "/",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
