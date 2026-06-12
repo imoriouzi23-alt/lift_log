@@ -890,57 +890,67 @@ function GraphPage({ records, exercises, activePart }) {
 }
 
 // ─────────────────────────────────────────────
-// データをAI採点用テキストに変換
+// データをAI採点用テキストに変換（期間指定対応）
+// fromDate / toDate は "YYYY-MM-DD"（両端含む）。null なら制限なし
 // ─────────────────────────────────────────────
-function buildExportText(records, goals, bodyData) {
+function buildExportText(records, goals, bodyData, fromDate, toDate, rangeLabel) {
+  const inRange = (d) => {
+    if (fromDate && d < fromDate) return false;
+    if (toDate && d > toDate) return false;
+    return true;
+  };
+
   const lines = [];
   lines.push("=== LIFT LOG トレーニングデータ ===");
+  lines.push(`対象期間: ${rangeLabel}`);
   lines.push(`書き出し日: ${todayStr()}`);
   lines.push("");
 
-  // 種目別の最高RMと推移
+  let totalSets = 0;
+  let trainingDates = new Set();
+
   Object.keys(DEFAULT_EXERCISES).forEach((part) => {
-    const sessions = records[part] || [];
+    const sessions = (records[part] || []).filter((s) => inRange(s.date));
     if (!sessions.length) return;
+
     lines.push(`【${part}】`);
-    // 種目ごとにまとめる
     const exMap = {};
     sessions.forEach((s) => {
       if (!exMap[s.exercise]) exMap[s.exercise] = [];
       exMap[s.exercise].push(s);
+      trainingDates.add(s.date);
     });
+
     Object.keys(exMap).forEach((ex) => {
-      const allSets = exMap[ex].flatMap((s) => (s.sets || []).map((set) => ({ ...set, date: s.date })));
+      // この期間の全セットを日付順で出す（今日の評価ならその日のセットが全部見える）
+      const exSessions = [...exMap[ex]].sort((a, b) => b.date.localeCompare(a.date));
+      // 種目の最高1RM（期間内）
+      const allSets = exSessions.flatMap((s) => (s.sets || []).map((set) => ({ ...set, date: s.date })));
       const withRM = allSets.filter((s) => s.rm);
       const best = withRM.length ? [...withRM].sort((a, b) => b.rm - a.rm)[0] : null;
       const goal = goals[part]?.[ex];
-      let line = `  ${ex}: `;
-      if (best) {
-        line += `最高1RM ${best.rm}kg (${best.weight}kg×${best.reps}rep, ${best.date})`;
-        if (goal) line += ` / 目標 ${goal}kg`;
-      } else {
-        line += "記録なし";
-      }
-      lines.push(line);
-      // 日付ごとの推移（直近5回分）
-      const byDate = {};
-      exMap[ex].forEach((s) => {
-        const top = (s.sets || []).filter((x) => x.rm).sort((a, b) => b.rm - a.rm)[0];
-        if (top) byDate[s.date] = top;
-      });
-      const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a)).slice(0, 5);
-      dates.forEach((d) => {
-        const t = byDate[d];
-        lines.push(`      ${d}: ${t.weight}kg×${t.reps}rep → 1RM ${t.rm}kg`);
+
+      let header = `  ■ ${ex}`;
+      if (best) header += ` — 期間内ベスト1RM ${best.rm}kg`;
+      if (goal) header += `（目標 ${goal}kg）`;
+      lines.push(header);
+
+      // 各セッションのセット内訳
+      exSessions.forEach((s) => {
+        const sets = s.sets || [];
+        totalSets += sets.length;
+        const setStr = sets.map((set, i) => `${set.weight}kg×${set.reps}(1RM${set.rm ?? "-"})`).join(", ");
+        lines.push(`     ${s.date}: ${setStr}`);
       });
     });
     lines.push("");
   });
 
-  // 体組成
-  if (bodyData.length) {
+  // 体組成（期間内）
+  const bodyInRange = bodyData.filter((r) => inRange(r.date));
+  if (bodyInRange.length) {
     lines.push("【体組成】");
-    bodyData.slice(0, 10).forEach((r) => {
+    bodyInRange.forEach((r) => {
       const parts = [];
       if (r.weight) parts.push(`体重${r.weight}kg`);
       if (r.fat) parts.push(`体脂肪${r.fat}%`);
@@ -950,15 +960,51 @@ function buildExportText(records, goals, bodyData) {
     lines.push("");
   }
 
+  // サマリー
+  lines.push("【サマリー】");
+  lines.push(`  トレ日数: ${trainingDates.size}日 / 総セット数: ${totalSets}セット`);
+  lines.push("");
+
   lines.push("=== ここまで ===");
-  lines.push("このデータを見て、トレーニングの進捗評価とアドバイスをください。");
+  lines.push("このデータを見て、トレーニングの評価とアドバイスをください。");
   return lines.join("\n");
+}
+
+// 期間プリセットから from/to を計算
+function calcRange(preset) {
+  const today = new Date();
+  const toStr = (d) => d.toISOString().slice(0, 10);
+  if (preset === "today") {
+    const t = toStr(today);
+    return { from: t, to: t, label: `今日（${t}）` };
+  }
+  if (preset === "7d") {
+    const d = new Date(today); d.setDate(d.getDate() - 6);
+    return { from: toStr(d), to: toStr(today), label: `直近7日間（${toStr(d)}〜${toStr(today)}）` };
+  }
+  if (preset === "30d") {
+    const d = new Date(today); d.setDate(d.getDate() - 29);
+    return { from: toStr(d), to: toStr(today), label: `直近30日間（${toStr(d)}〜${toStr(today)}）` };
+  }
+  return { from: null, to: null, label: "全期間" };
 }
 
 function SettingsPage({ records, goals, bodyData }) {
   const [copied, setCopied] = useState(false);
   const [showText, setShowText] = useState(false);
-  const text = buildExportText(records, goals, bodyData);
+  const [preset, setPreset] = useState("today");   // today / 7d / 30d / all / custom
+  const [customFrom, setCustomFrom] = useState(todayStr());
+  const [customTo, setCustomTo] = useState(todayStr());
+
+  // 現在の期間を決定
+  let range;
+  if (preset === "custom") {
+    range = { from: customFrom, to: customTo, label: `${customFrom}〜${customTo}` };
+  } else {
+    range = calcRange(preset);
+  }
+
+  const text = buildExportText(records, goals, bodyData, range.from, range.to, range.label);
 
   const handleCopy = async () => {
     try {
@@ -972,13 +1018,21 @@ function SettingsPage({ records, goals, bodyData }) {
 
   const hasData = Object.values(records).some((arr) => (arr || []).length > 0) || bodyData.length > 0;
 
+  const presetBtns = [
+    { key: "today", label: "今日" },
+    { key: "7d", label: "直近7日" },
+    { key: "30d", label: "直近30日" },
+    { key: "all", label: "全期間" },
+    { key: "custom", label: "日付指定" },
+  ];
+
   return (
     <div className="content">
       <div className="sec-label">🤖 AI採点・アドバイス</div>
       <div className="form-card">
         <div style={{ fontSize: 13, lineHeight: 1.7, color: "var(--text)", marginBottom: 14 }}>
-          記録データを書き出して、AIに貼り付けると<br />
-          進捗の採点やアドバイスがもらえる。
+          期間を選んでデータを書き出し、AIに貼り付けると<br />
+          その期間の評価やアドバイスがもらえる。
         </div>
 
         {!hasData ? (
@@ -987,8 +1041,39 @@ function SettingsPage({ records, goals, bodyData }) {
           </div>
         ) : (
           <>
+            {/* 期間プリセット */}
+            <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700, marginBottom: 6 }}>期間を選ぶ</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+              {presetBtns.map((b) => (
+                <button
+                  key={b.key}
+                  onClick={() => setPreset(b.key)}
+                  style={{
+                    padding: "7px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700,
+                    fontFamily: "inherit", cursor: "pointer",
+                    border: preset === b.key ? "1px solid var(--red)" : "1px solid var(--border)",
+                    background: preset === b.key ? "var(--red)" : "var(--sur2)",
+                    color: preset === b.key ? "#fff" : "var(--muted)",
+                  }}
+                >{b.label}</button>
+              ))}
+            </div>
+
+            {/* カスタム日付 */}
+            {preset === "custom" && (
+              <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+                <input className="date-input" type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} style={{ flex: 1 }} />
+                <span style={{ color: "var(--muted)", fontSize: 12 }}>〜</span>
+                <input className="date-input" type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} style={{ flex: 1 }} />
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 12 }}>
+              対象: {range.label}
+            </div>
+
             <button className="btn-save" onClick={handleCopy} style={{ marginTop: 0 }}>
-              {copied ? "✅ コピーした！" : "📋 データをコピー"}
+              {copied ? "✅ コピーした！" : "📋 この期間のデータをコピー"}
             </button>
             <button
               className="goal-set-btn"
@@ -1018,10 +1103,10 @@ function SettingsPage({ records, goals, bodyData }) {
       <div className="form-card">
         <div className="sec-label" style={{marginBottom:10}}>使い方</div>
         <div style={{ fontSize: 12, lineHeight: 1.8, color: "var(--muted)" }}>
-          ① 「データをコピー」を押す<br />
-          ② Claudeアプリを開く<br />
-          ③ 貼り付けて「採点して」と送る<br />
-          ④ 進捗評価とアドバイスが返ってくる
+          ① 期間を選ぶ（今日のトレ評価なら「今日」）<br />
+          ② 「この期間のデータをコピー」を押す<br />
+          ③ Claudeアプリを開いて貼り付け<br />
+          ④ 「採点して」と送る
         </div>
       </div>
     </div>
