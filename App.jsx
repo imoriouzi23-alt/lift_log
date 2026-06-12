@@ -183,7 +183,7 @@ html,body{height:100%;background:#0d0d10;color:#f0f0f5;font-family:'M PLUS 1p',s
 
 /* BOTTOM NAV */
 .bottomnav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:430px;background:var(--surface);border-top:1px solid var(--border);display:flex;z-index:300;}
-.bn-btn{flex:1;padding:10px 4px 12px;background:none;border:none;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10px;font-family:inherit;font-weight:700;transition:color .15s;}
+.bn-btn{flex:1;padding:10px 2px 12px;background:none;border:none;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:9px;font-family:inherit;font-weight:700;transition:color .15s;}
 .bn-btn.active{color:var(--red);}
 .bn-icon{font-size:20px;line-height:1;}
 
@@ -890,6 +890,145 @@ function GraphPage({ records, exercises, activePart }) {
 }
 
 // ─────────────────────────────────────────────
+// データをAI採点用テキストに変換
+// ─────────────────────────────────────────────
+function buildExportText(records, goals, bodyData) {
+  const lines = [];
+  lines.push("=== LIFT LOG トレーニングデータ ===");
+  lines.push(`書き出し日: ${todayStr()}`);
+  lines.push("");
+
+  // 種目別の最高RMと推移
+  Object.keys(DEFAULT_EXERCISES).forEach((part) => {
+    const sessions = records[part] || [];
+    if (!sessions.length) return;
+    lines.push(`【${part}】`);
+    // 種目ごとにまとめる
+    const exMap = {};
+    sessions.forEach((s) => {
+      if (!exMap[s.exercise]) exMap[s.exercise] = [];
+      exMap[s.exercise].push(s);
+    });
+    Object.keys(exMap).forEach((ex) => {
+      const allSets = exMap[ex].flatMap((s) => (s.sets || []).map((set) => ({ ...set, date: s.date })));
+      const withRM = allSets.filter((s) => s.rm);
+      const best = withRM.length ? [...withRM].sort((a, b) => b.rm - a.rm)[0] : null;
+      const goal = goals[part]?.[ex];
+      let line = `  ${ex}: `;
+      if (best) {
+        line += `最高1RM ${best.rm}kg (${best.weight}kg×${best.reps}rep, ${best.date})`;
+        if (goal) line += ` / 目標 ${goal}kg`;
+      } else {
+        line += "記録なし";
+      }
+      lines.push(line);
+      // 日付ごとの推移（直近5回分）
+      const byDate = {};
+      exMap[ex].forEach((s) => {
+        const top = (s.sets || []).filter((x) => x.rm).sort((a, b) => b.rm - a.rm)[0];
+        if (top) byDate[s.date] = top;
+      });
+      const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a)).slice(0, 5);
+      dates.forEach((d) => {
+        const t = byDate[d];
+        lines.push(`      ${d}: ${t.weight}kg×${t.reps}rep → 1RM ${t.rm}kg`);
+      });
+    });
+    lines.push("");
+  });
+
+  // 体組成
+  if (bodyData.length) {
+    lines.push("【体組成】");
+    bodyData.slice(0, 10).forEach((r) => {
+      const parts = [];
+      if (r.weight) parts.push(`体重${r.weight}kg`);
+      if (r.fat) parts.push(`体脂肪${r.fat}%`);
+      if (r.muscle) parts.push(`筋肉量${r.muscle}kg`);
+      lines.push(`  ${r.date}: ${parts.join(" / ")}${r.memo ? ` (${r.memo})` : ""}`);
+    });
+    lines.push("");
+  }
+
+  lines.push("=== ここまで ===");
+  lines.push("このデータを見て、トレーニングの進捗評価とアドバイスをください。");
+  return lines.join("\n");
+}
+
+function SettingsPage({ records, goals, bodyData }) {
+  const [copied, setCopied] = useState(false);
+  const [showText, setShowText] = useState(false);
+  const text = buildExportText(records, goals, bodyData);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setShowText(true);
+    }
+  };
+
+  const hasData = Object.values(records).some((arr) => (arr || []).length > 0) || bodyData.length > 0;
+
+  return (
+    <div className="content">
+      <div className="sec-label">🤖 AI採点・アドバイス</div>
+      <div className="form-card">
+        <div style={{ fontSize: 13, lineHeight: 1.7, color: "var(--text)", marginBottom: 14 }}>
+          記録データを書き出して、AIに貼り付けると<br />
+          進捗の採点やアドバイスがもらえる。
+        </div>
+
+        {!hasData ? (
+          <div className="empty-state" style={{ padding: "20px 0" }}>
+            まだ記録がない。<br />記録を刻んでから書き出せ。
+          </div>
+        ) : (
+          <>
+            <button className="btn-save" onClick={handleCopy} style={{ marginTop: 0 }}>
+              {copied ? "✅ コピーした！" : "📋 データをコピー"}
+            </button>
+            <button
+              className="goal-set-btn"
+              style={{ marginTop: 10, padding: "10px" }}
+              onClick={() => setShowText((s) => !s)}
+            >
+              {showText ? "テキストを隠す" : "書き出し内容を確認する"}
+            </button>
+
+            {showText && (
+              <textarea
+                readOnly
+                value={text}
+                onClick={(e) => e.target.select()}
+                style={{
+                  width: "100%", height: 240, marginTop: 12,
+                  background: "var(--bg)", border: "1px solid var(--border)",
+                  borderRadius: 8, color: "var(--text)", fontSize: 11,
+                  padding: 12, fontFamily: "monospace", lineHeight: 1.5, resize: "vertical",
+                }}
+              />
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="form-card">
+        <div className="sec-label" style={{marginBottom:10}}>使い方</div>
+        <div style={{ fontSize: 12, lineHeight: 1.8, color: "var(--muted)" }}>
+          ① 「データをコピー」を押す<br />
+          ② Claudeアプリを開く<br />
+          ③ 貼り付けて「採点して」と送る<br />
+          ④ 進捗評価とアドバイスが返ってくる
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // APP
 // ─────────────────────────────────────────────
 export default function App() {
@@ -942,6 +1081,7 @@ export default function App() {
         {tab==="record" && <RecordPage records={records} setRecords={setRecords} exercises={exercises} setExercises={setExercises} goals={goals} activePart={activePart} onCelebrate={setCelebration}/>}
         {tab==="graph"  && <GraphPage  records={records} exercises={exercises} activePart={activePart}/>}
         {tab==="body"   && <BodyPage   bodyData={bodyData} setBodyData={setBodyData}/>}
+        {tab==="ai"     && <SettingsPage records={records} goals={goals} bodyData={bodyData}/>}
 
         <Celebration data={celebration} onClose={()=>setCelebration(null)} />
 
@@ -950,8 +1090,10 @@ export default function App() {
           <button className={`bn-btn ${tab==="record"?"active":""}`} onClick={()=>setTab("record")}><span className="bn-icon">📝</span>記録</button>
           <button className={`bn-btn ${tab==="graph"?"active":""}`}  onClick={()=>setTab("graph")}> <span className="bn-icon">📈</span>グラフ</button>
           <button className={`bn-btn ${tab==="body"?"active":""}`}   onClick={()=>setTab("body")}>  <span className="bn-icon">⚖️</span>体組成</button>
+          <button className={`bn-btn ${tab==="ai"?"active":""}`}     onClick={()=>setTab("ai")}>    <span className="bn-icon">🤖</span>AI採点</button>
         </div>
       </div>
     </>
   );
 }
+
